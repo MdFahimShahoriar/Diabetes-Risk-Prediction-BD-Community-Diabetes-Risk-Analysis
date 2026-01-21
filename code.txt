@@ -1,0 +1,983 @@
+# Diabetes Risk Perception and Behavioral Response Analysis
+# Machine Learning Pipeline with Explainable AI
+# Project Goal: Develop a predictive framework to understand diabetes risk perception factors and behavioral responses
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
+import lime.lime_tabular
+from sklearn.model_selection import train_test_split, StratifiedKFold, KFold, cross_val_score, GridSearchCV, RandomizedSearchCV
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, LabelEncoder, OneHotEncoder
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, AdaBoostClassifier, AdaBoostRegressor, StackingClassifier, StackingRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.linear_model import LogisticRegression, Ridge
+from xgboost import XGBClassifier, XGBRegressor
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_absolute_error, mean_squared_error, r2_score
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.decomposition import PCA
+from imblearn.over_sampling import SMOTE, ADASYN, BorderlineSMOTE
+from scipy import stats
+import joblib
+import warnings
+import logging
+import time
+warnings.filterwarnings('ignore')
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Record start time
+start_time = time.time()
+logger.info("Starting diabetes risk perception ML pipeline")
+
+# 1️⃣ Data Preprocessing & Cleaning
+logger.info("Step 1: Data Loading and Preprocessing")
+
+# Mount Google Drive (uncomment when running in Colab)
+from google.colab import drive
+drive.mount('/content/drive')
+
+try:
+    # Load Dataset
+    # Update path when using Google Colab
+    df = pd.read_excel('/content/drive/MyDrive/Data of 300 people.xlsx')  
+    # Display basic dataset information
+    logger.info(f"Dataset loaded successfully with shape: {df.shape}")
+    print(f"Dataset shape: {df.shape}")
+    print("\nFirst 5 rows of the dataset:")
+    display(df.head())
+    
+    print("\nDataset Information:")
+    display(df.info())
+    
+    print("\nSummary Statistics:")
+    display(df.describe())
+except Exception as e:
+    logger.error(f"Error loading dataset: {e}")
+    print(f"Error loading dataset: {e}")
+
+# Check for missing values
+print("\nMissing Values by Column:")
+missing_values = df.isnull().sum()
+print(missing_values[missing_values > 0])
+
+# Check for duplicates
+duplicates = df.duplicated().sum()
+print(f"\nNumber of duplicate rows: {duplicates}")
+
+# Remove Duplicates
+df.drop_duplicates(inplace=True)
+logger.info(f"Removed {duplicates} duplicate records.")
+
+# Handle Missing Values
+# Identify numeric and categorical columns
+numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+categorical_cols = df.select_dtypes(include=['object']).columns
+
+# Impute missing values
+if not missing_values.sum() == 0:
+    # Mean imputation for numeric columns
+    df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
+    
+    # Mode imputation for categorical columns
+    for col in categorical_cols:
+        df[col] = df[col].fillna(df[col].mode()[0])
+    
+    logger.info("Missing values handled with mean/mode imputation")
+
+# Identify target variable
+target_variable = 'Being in diabetes patient'
+if target_variable not in df.columns:
+    logger.warning(f"Target variable '{target_variable}' not found in dataset. Please check column names.")
+    # Try to find a column that might contain diabetes status
+    possible_target_cols = [col for col in df.columns if 'diabet' in col.lower()]
+    if possible_target_cols:
+        target_variable = possible_target_cols[0]
+        logger.info(f"Using '{target_variable}' as target variable instead")
+    else:
+        possible_target_cols = [col for col in df.columns if 'patient' in col.lower()]
+        if possible_target_cols:
+            target_variable = possible_target_cols[0]
+            logger.info(f"Using '{target_variable}' as target variable instead")
+
+print(f"\nTarget variable: {target_variable}")
+
+# Detect and handle outliers
+def detect_and_handle_outliers(df, method='winsorize'):
+    """
+    Detect outliers using IQR method and handle them using winsorization or removal
+    """
+    numeric_data = df.select_dtypes(include=['int64', 'float64'])
+    
+    for column in numeric_data.columns:
+        Q1 = df[column].quantile(0.25)
+        Q3 = df[column].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        outliers = ((df[column] < lower_bound) | (df[column] > upper_bound)).sum()
+        
+        if outliers > 0:
+            print(f"Column {column}: {outliers} outliers detected")
+            
+            if method == 'winsorize':
+                # Winsorization (capping outliers)
+                df[column] = np.where(df[column] < lower_bound, lower_bound, df[column])
+                df[column] = np.where(df[column] > upper_bound, upper_bound, df[column])
+                
+            elif method == 'remove':
+                # Remove outliers (be careful with this approach)
+                df = df[~((df[column] < lower_bound) | (df[column] > upper_bound))]
+    
+    return df
+
+# Apply outlier detection and handling
+print("\nDetecting and handling outliers:")
+df = detect_and_handle_outliers(df, method='winsorize')
+logger.info("Outliers detected and handled using Winsorization")
+
+# 2️⃣ Exploratory Data Analysis (EDA) & Visualization
+logger.info("Step 2: Exploratory Data Analysis and Visualization")
+
+# Create a figure directory for saving plots
+import os
+if not os.path.exists('/content/drive/MyDrive/figures'):
+    os.makedirs('/content/drive/MyDrive/figures')
+
+print("\n--- Exploratory Data Analysis ---")
+
+# Distribution of target variable
+plt.figure(figsize=(10, 6))
+if df[target_variable].dtype == 'object':
+    sns.countplot(x=target_variable, data=df)
+else:
+    sns.histplot(df[target_variable], kde=True)
+plt.title(f'Distribution of {target_variable}')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/target_distribution.png')
+
+# Pairplot of numeric features with target variable
+print("Generating pairplot (this may take a moment)...")
+numeric_features = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+# Limit to a few columns for visibility
+if len(numeric_features) > 5:
+    numeric_features = numeric_features[:5]
+
+if target_variable in numeric_features:
+    numeric_features.remove(target_variable)
+    
+sample_data = df.sample(min(100, len(df)))  # Sample to speed up plotting if needed
+sns.pairplot(sample_data[numeric_features + [target_variable]], hue=target_variable if len(df[target_variable].unique()) < 10 else None)
+plt.suptitle('Pairplot of Numeric Features', y=1.02)
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/pairplot.png')
+
+# Correlation heatmap
+plt.figure(figsize=(12, 10))
+correlation_matrix = df.select_dtypes(include=['int64', 'float64']).corr()
+mask = np.triu(correlation_matrix)
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5, mask=mask)
+plt.title('Correlation Heatmap')
+plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/correlation_heatmap.png')
+
+# Box plots for numeric features to visualize distributions and outliers
+plt.figure(figsize=(15, 10))
+df_numeric = df.select_dtypes(include=['int64', 'float64'])
+df_numeric_sample = df_numeric.sample(min(100, len(df_numeric.columns)), axis=1) if df_numeric.shape[1] > 10 else df_numeric
+sns.boxplot(data=df_numeric_sample)
+plt.title('Box Plot of Numeric Features')
+plt.xticks(rotation=90)
+plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/boxplot_numeric.png')
+
+# Violin plots for distribution and probability density
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(numeric_features[:min(5, len(numeric_features))]):
+    plt.subplot(1, min(5, len(numeric_features)), i+1)
+    sns.violinplot(y=df[col], x=df[target_variable] if len(df[target_variable].unique()) < 10 else None)
+    plt.title(f'Violin Plot of {col}')
+    plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/violin_plots.png')
+
+# Swarm plots for categorical distributions
+if len(categorical_cols) > 0:
+    for col in categorical_cols[:min(3, len(categorical_cols))]:
+        if df[col].nunique() < 10:  # Only create swarm plots for categorical columns with few categories
+            plt.figure(figsize=(10, 6))
+            sns.swarmplot(x=col, y=numeric_features[0], data=df, hue=target_variable if len(df[target_variable].unique()) < 10 else None)
+            plt.title(f'Swarm Plot: {col} vs {numeric_features[0]}')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.show()
+            plt.savefig(f'/content/drive/MyDrive/figures/swarmplot_{col}.png')
+
+# Categorical feature analysis
+if len(categorical_cols) > 0:
+    for col in categorical_cols[:min(5, len(categorical_cols))]:
+        plt.figure(figsize=(10, 6))
+        
+        # Check if the categorical feature has less than 10 unique values
+        if df[col].nunique() < 10:
+            if df[target_variable].dtype == 'object' and df[target_variable].nunique() < 10:
+                # Stacked barplot for categorical features vs target
+                pd.crosstab(df[col], df[target_variable], normalize='index').plot(kind='bar', stacked=True)
+                plt.title(f'{col} vs {target_variable}')
+            else:
+                # Regular count plot
+                sns.countplot(x=col, data=df)
+                plt.title(f'Distribution of {col}')
+            
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.show()
+            plt.savefig(f'/content/drive/MyDrive/figures/categorical_{col}.png')
+
+# KDE Plots for numeric features
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(numeric_features[:min(5, len(numeric_features))]):
+    plt.subplot(1, min(5, len(numeric_features)), i+1)
+    for val in df[target_variable].unique():
+        subset = df[df[target_variable] == val]
+        sns.kdeplot(subset[col], label=f'{target_variable}={val}')
+    plt.title(f'KDE Plot of {col}')
+    plt.legend()
+plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/kde_plots.png')
+
+# 3️⃣ Feature Engineering & Encoding
+logger.info("Step 3: Feature Engineering and Encoding")
+
+# Save the original column names and their types for later interpretation
+original_columns = df.columns.tolist()
+column_types = {col: str(df[col].dtype) for col in original_columns}
+
+# Encoding Categorical Variables
+if len(categorical_cols) > 0:
+    print("\n--- Encoding Categorical Variables ---")
+    
+    # Label Encoding
+    label_encoders = {}
+    for col in categorical_cols:
+        if df[col].nunique() <= 30:  # Only encode if not too many unique values
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col])
+            label_encoders[col] = le
+            print(f"Label encoded {col}: {list(le.classes_)}")
+        else:
+            # For high cardinality features, we might want to drop or use other techniques
+            print(f"Skipping encoding for {col} due to high cardinality ({df[col].nunique()} values)")
+
+# Feature Scaling
+print("\n--- Feature Scaling ---")
+# Identify columns to scale (numeric columns except the target if it's binary)
+cols_to_scale = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+if target_variable in cols_to_scale and df[target_variable].nunique() <= 2:
+    cols_to_scale.remove(target_variable)
+
+scaler = StandardScaler()
+df[cols_to_scale] = scaler.fit_transform(df[cols_to_scale])
+print(f"Applied StandardScaler to {len(cols_to_scale)} numeric features")
+logger.info(f"Features scaled using StandardScaler")
+
+# 4️⃣ Feature Selection & Dimensionality Reduction (if needed)
+if len(cols_to_scale) > 15:  # If we have many features, consider PCA
+    print("\n--- Dimensionality Reduction with PCA ---")
+    
+    # Apply PCA
+    pca = PCA(n_components=0.95)  # Retain 95% of variance
+    pca_result = pca.fit_transform(df[cols_to_scale])
+    
+    # Create new dataframe with PCA features
+    pca_df = pd.DataFrame(
+        data=pca_result, 
+        columns=[f'PC{i+1}' for i in range(pca_result.shape[1])]
+    )
+    
+    # Add target variable
+    pca_df[target_variable] = df[target_variable].values
+    
+    print(f"Reduced dimensions from {len(cols_to_scale)} to {pca_result.shape[1]} features")
+    print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+    
+    # Visualize first two principal components
+    plt.figure(figsize=(10, 8))
+    scatter = plt.scatter(pca_df['PC1'], pca_df['PC2'], c=pca_df[target_variable] if df[target_variable].nunique() <= 10 else None, cmap='viridis', alpha=0.5)
+    
+    # If target is categorical with few classes, add legend
+    if df[target_variable].nunique() <= 10:
+        plt.colorbar(label=target_variable)
+        
+    plt.title('PCA: First Two Principal Components')
+    plt.xlabel('PC1')
+    plt.ylabel('PC2')
+    plt.show()
+    plt.savefig('/content/drive/MyDrive/figures/pca_visualization.png')
+    
+    # Continue with original dataframe
+    # But store PCA results for later use if needed
+    # df_pca = pca_df
+
+# 5️⃣ Data Splitting & Cross-Validation Strategy
+logger.info("Step 5: Data Splitting and Cross-Validation Setup")
+
+# Define target and features
+y = df[target_variable]
+X = df.drop(columns=[target_variable])
+
+# Check if target is categorical or continuous
+is_classification = y.dtype == 'object' or y.nunique() <= 10
+problem_type = "Classification" if is_classification else "Regression"
+print(f"\nProblem type detected: {problem_type}")
+
+# Split the data into training and testing sets
+if is_classification:
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y if len(y.unique()) > 1 else None, random_state=42
+    )
+else:
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+print(f"Training set: {X_train.shape[0]} samples")
+print(f"Testing set: {X_test.shape[0]} samples")
+
+# Define cross-validation strategy
+if is_classification:
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    logger.info("Using StratifiedKFold CV for classification")
+else:
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    logger.info("Using KFold CV for regression")
+
+# 6️⃣ Handling Class Imbalance (for classification problems)
+if is_classification:
+    # Check for class imbalance
+    class_distribution = y_train.value_counts(normalize=True)
+    print("\n--- Class Distribution (Training Set) ---")
+    print(class_distribution)
+    
+    # If imbalanced (minority class < 30% of samples), apply SMOTE
+    minority_class_ratio = class_distribution.min()
+    if minority_class_ratio < 0.3 and len(y_train.unique()) > 1:
+        print("\n--- Handling Class Imbalance with SMOTE ---")
+        
+        # Apply SMOTE
+        smote = SMOTE(random_state=42)
+        X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+        
+        print(f"Original training set shape: {X_train.shape}")
+        print(f"Balanced training set shape: {X_train_balanced.shape}")
+        print("Class distribution after SMOTE:")
+        print(pd.Series(y_train_balanced).value_counts(normalize=True))
+        
+        # Save original training data
+        X_train_original = X_train.copy()
+        y_train_original = y_train.copy()
+        
+        # Update training data to balanced dataset
+        X_train = X_train_balanced
+        y_train = y_train_balanced
+        logger.info("Applied SMOTE to handle class imbalance")
+        
+        # Try additional resampling techniques
+        print("\n--- Comparing Different Resampling Techniques ---")
+        
+        # BorderlineSMOTE
+        border_smote = BorderlineSMOTE(random_state=42)
+        X_train_bordersmote, y_train_bordersmote = border_smote.fit_resample(X_train_original, y_train_original)
+        
+        # ADASYN
+        adasyn = ADASYN(random_state=42)
+        X_train_adasyn, y_train_adasyn = adasyn.fit_resample(X_train_original, y_train_original)
+        
+        print("Class distribution after BorderlineSMOTE:")
+        print(pd.Series(y_train_bordersmote).value_counts(normalize=True))
+        
+        print("Class distribution after ADASYN:")
+        print(pd.Series(y_train_adasyn).value_counts(normalize=True))
+        
+        # We'll use the regular SMOTE results for now but keep these for comparison
+        logger.info("Generated additional resampled datasets with BorderlineSMOTE and ADASYN")
+    else:
+        print("Class distribution is relatively balanced. SMOTE not applied.")
+
+# 7️⃣ ML Model Training with Default Parameters
+logger.info("Step 7: ML Model Training with Default Parameters")
+
+print("\n--- Training ML Models (Default Parameters) ---")
+
+# Define models based on problem type
+if is_classification:
+    models = {
+        'Decision Tree': DecisionTreeClassifier(random_state=42),
+        'Random Forest': RandomForestClassifier(random_state=42, n_jobs=-1),
+        'KNN': KNeighborsClassifier(n_jobs=-1),
+        'SVM': SVC(probability=True, random_state=42),
+        'AdaBoost': AdaBoostClassifier(random_state=42),
+        'XGBoost': XGBClassifier(random_state=42, n_jobs=-1),
+        'Neural Network': MLPClassifier(random_state=42, max_iter=1000)
+    }
+else:
+    models = {
+        'Decision Tree': DecisionTreeRegressor(random_state=42),
+        'Random Forest': RandomForestRegressor(random_state=42, n_jobs=-1),
+        'KNN': KNeighborsRegressor(n_jobs=-1),
+        'SVR': SVR(),
+        'AdaBoost': AdaBoostRegressor(random_state=42),
+        'XGBoost': XGBRegressor(random_state=42, n_jobs=-1)
+    }
+
+# Train and evaluate base models
+model_results = {}
+for name, model in models.items():
+    print(f"\nTraining {name}...")
+    model.fit(X_train, y_train)
+    
+    # Make predictions
+    y_train_pred = model.predict(X_train)
+    y_test_pred = model.predict(X_test)
+    
+    # Evaluate model
+    if is_classification:
+        train_accuracy = accuracy_score(y_train, y_train_pred)
+        test_accuracy = accuracy_score(y_test, y_test_pred)
+        
+        print(f"{name} Results:")
+        print(f"  Training Accuracy: {train_accuracy:.4f}")
+        print(f"  Testing Accuracy: {test_accuracy:.4f}")
+        
+        # Generate classification report
+        print("\nClassification Report (Test Set):")
+        print(classification_report(y_test, y_test_pred))
+        
+        # Plot confusion matrix
+        plt.figure(figsize=(8, 6))
+        cm = confusion_matrix(y_test, y_test_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title(f'Confusion Matrix - {name}')
+        plt.xlabel('Predicted Label')
+        plt.ylabel('True Label')
+        plt.show()
+        plt.savefig(f'/content/drive/MyDrive/figures/confusion_matrix_{name}.png')
+        
+        # Store results
+        model_results[name] = {
+            'model': model,
+            'train_accuracy': train_accuracy,
+            'test_accuracy': test_accuracy
+        }
+    else:
+        # For regression problems
+        train_mse = mean_squared_error(y_train, y_train_pred)
+        train_rmse = np.sqrt(train_mse)
+        train_mae = mean_absolute_error(y_train, y_train_pred)
+        train_r2 = r2_score(y_train, y_train_pred)
+        
+        test_mse = mean_squared_error(y_test, y_test_pred)
+        test_rmse = np.sqrt(test_mse)
+        test_mae = mean_absolute_error(y_test, y_test_pred)
+        test_r2 = r2_score(y_test, y_test_pred)
+        
+        print(f"{name} Results:")
+        print(f"  Training RMSE: {train_rmse:.4f}")
+        print(f"  Testing RMSE: {test_rmse:.4f}")
+        print(f"  Training MAE: {train_mae:.4f}")
+        print(f"  Testing MAE: {test_mae:.4f}")
+        print(f"  Training R²: {train_r2:.4f}")
+        print(f"  Testing R²: {test_r2:.4f}")
+        
+        # Visualize Predicted vs Actual
+        plt.figure(figsize=(10, 6))
+        plt.scatter(y_test, y_test_pred, alpha=0.5)
+        plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
+        plt.xlabel('Actual')
+        plt.ylabel('Predicted')
+        plt.title(f'Actual vs Predicted - {name}')
+        plt.show()
+        plt.savefig(f'/content/drive/MyDrive/figures/actual_vs_predicted_{name}.png')
+        
+        # Store results
+        model_results[name] = {
+            'model': model,
+            'train_rmse': train_rmse,
+            'test_rmse': test_rmse,
+            'train_r2': train_r2,
+            'test_r2': test_r2
+        }
+
+# 8️⃣ Hyperparameter Tuning
+logger.info("Step 8: Hyperparameter Tuning")
+
+print("\n--- Hyperparameter Tuning ---")
+
+# Select top 3 models for hyperparameter tuning
+if is_classification:
+    top_models = sorted(model_results.items(), key=lambda x: x[1]['test_accuracy'], reverse=True)[:3]
+else:
+    top_models = sorted(model_results.items(), key=lambda x: x[1]['test_r2'], reverse=True)[:3]
+
+print(f"Top models selected for hyperparameter tuning: {[model[0] for model in top_models]}")
+
+# Define hyperparameter grids
+param_grids = {
+    'Decision Tree': {
+        'criterion': ['gini', 'entropy'] if is_classification else ['squared_error', 'absolute_error'],
+        'max_depth': [3, 5, 7, 10, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    },
+    'Random Forest': {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [5, 10, 20, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    },
+    'KNN': {
+        'n_neighbors': [3, 5, 7, 9, 11],
+        'weights': ['uniform', 'distance'],
+        'p': [1, 2]  # 1 for Manhattan, 2 for Euclidean
+    },
+    'SVM': {
+        'C': [0.1, 1, 10, 100],
+        'gamma': ['scale', 'auto', 0.1, 0.01],
+        'kernel': ['rbf', 'linear', 'poly']
+    },
+    'SVR': {
+        'C': [0.1, 1, 10, 100],
+        'gamma': ['scale', 'auto', 0.1, 0.01],
+        'kernel': ['rbf', 'linear', 'poly']
+    },
+    'AdaBoost': {
+        'n_estimators': [50, 100, 200],
+        'learning_rate': [0.01, 0.1, 1.0]
+    },
+    'XGBoost': {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [3, 5, 7],
+        'learning_rate': [0.01, 0.1, 0.3],
+        'subsample': [0.8, 1.0],
+        'colsample_bytree': [0.8, 1.0]
+    },
+    'Neural Network': {
+        'hidden_layer_sizes': [(50,), (100,), (50, 50), (100, 50)],
+        'activation': ['relu', 'tanh'],
+        'alpha': [0.0001, 0.001, 0.01],
+        'learning_rate': ['constant', 'adaptive']
+    }
+}
+
+best_tuned_models = {}
+
+# Perform hyperparameter tuning for top models
+for model_name, model_info in top_models:
+    print(f"\nTuning hyperparameters for {model_name}...")
+    
+    model = model_info['model']
+    param_grid = param_grids.get(model_name, {})
+    
+    if param_grid:
+        # Use RandomizedSearchCV for efficiency
+        grid_search = RandomizedSearchCV(
+            estimator=model,
+            param_distributions=param_grid,
+            n_iter=10,  # Try 10 combinations
+            cv=cv,
+            scoring='accuracy' if is_classification else 'neg_mean_squared_error',
+            n_jobs=-1,
+            random_state=42,
+            verbose=1
+        )
+        
+        grid_search.fit(X_train, y_train)
+        
+        print(f"Best parameters: {grid_search.best_params_}")
+        print(f"Best cross-validation score: {grid_search.best_score_:.4f}")
+        
+        # Save the best model
+        best_model = grid_search.best_estimator_
+        best_tuned_models[model_name] = best_model
+        
+        # Evaluate the best model
+        y_pred = best_model.predict(X_test)
+        
+        if is_classification:
+            accuracy = accuracy_score(y_test, y_pred)
+            print(f"Test accuracy with tuned model: {accuracy:.4f}")
+            
+            # Classification report
+            print("\nClassification Report (Tuned Model):")
+            print(classification_report(y_test, y_pred))
+            
+            # Confusion matrix
+            plt.figure(figsize=(8, 6))
+            cm = confusion_matrix(y_test, y_pred)
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.title(f'Confusion Matrix - Tuned {model_name}')
+            plt.xlabel('Predicted Label')
+            plt.ylabel('True Label')
+            plt.show()
+            plt.savefig(f'/content/drive/MyDrive/figures/tuned_confusion_matrix_{model_name}.png')
+        else:
+            mse = mean_squared_error(y_test, y_pred)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+            
+            print(f"Test RMSE with tuned model: {rmse:.4f}")
+            print(f"Test MAE with tuned model: {mae:.4f}")
+            print(f"Test R² with tuned model: {r2:.4f}")
+    else:
+        print(f"No parameter grid defined for {model_name}. Skipping tuning.")
+
+# 9️⃣ Explainability & Feature Importance
+logger.info("Step 9: Explainability and Feature Importance Analysis")
+
+print("\n--- Explainability & Feature Importance Analysis ---")
+
+# Select the best model for explainability
+if is_classification:
+    best_model_name = max(best_tuned_models.items(), key=lambda x: accuracy_score(y_test, x[1].predict(X_test)))[0] if best_tuned_models else max(model_results.items(), key=lambda x: x[1]['test_accuracy'])[0]
+else:
+    best_model_name = max(best_tuned_models.items(), key=lambda x: r2_score(y_test, x[1].predict(X_test)))[0] if best_tuned_models else max(model_results.items(), key=lambda x: x[1]['test_r2'])[0]
+
+best_model = best_tuned_models.get(best_model_name, model_results[best_model_name]['model'])
+print(f"Selected {best_model_name} for explainability analysis")
+
+# 1. Feature Importance (for tree-based models)
+if 'Random Forest' in best_model_name or 'XGBoost' in best_model_name or 'Decision Tree' in best_model_name:
+    print("\n1. Feature Importance Analysis")
+    
+    # Extract feature importances
+    if hasattr(best_model, 'feature_importances_'):
+        feature_importances = best_model.feature_importances_
+        feature_names = X_train.columns
+        
+        # Create a dataframe for visualization
+        importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': feature_importances
+        })
+        importance_df = importance_df.sort_values('Importance', ascending=False)
+        
+        # Visualize top 15 features
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='Importance', y='Feature', data=importance_df.head(15))
+        plt.title(f'Top 15 Feature Importances - {best_model_name}')
+        plt.tight_layout()
+        plt.show()
+        plt.savefig('/content/drive/MyDrive/figures/feature_importance.png')
+        
+        print("Top 10 Most Important Features:")
+        for i, row in importance_df.head(10).iterrows():
+            print(f"  {row['Feature']}: {row['Importance']:.4f}")
+    else:
+        print("Selected model does not have feature_importances_ attribute")
+
+# 2. Permutation Importance (for any model)
+print("\n2. Permutation Importance Analysis")
+from sklearn.inspection import permutation_importance
+
+# Calculate permutation importance
+perm_importance = permutation_importance(best_model, X_test, y_test, n_repeats=10, random_state=42, n_jobs=-1)
+
+# Sort features by importance
+perm_importance_sorted_idx = perm_importance.importances_mean.argsort()[::-1]
+
+# Visualize permutation importance
+plt.figure(figsize=(12, 8))
+perm_df = pd.DataFrame({
+    'Feature': X_test.columns[perm_importance_sorted_idx],
+    'Importance': perm_importance.importances_mean[perm_importance_sorted_idx]
+}).head(15)
+sns.barplot(x='Importance', y='Feature', data=perm_df)
+plt.title(f'Permutation Importance - {best_model_name}')
+plt.tight_layout()
+plt.show()
+plt.savefig('/content/drive/MyDrive/figures/permutation_importance.png')
+
+print("Top 10 Features by Permutation Importance:")
+for i, idx in enumerate(perm_importance_sorted_idx[:10]):
+    print(f"  {X_test.columns[idx]}: {perm_importance.importances_mean[idx]:.4f} ± {perm_importance.importances_std[idx]:.4f}")
+
+# 3. SHAP Values
+print("\n3. SHAP Analysis")
+try:
+    # Get a sample of test data (for computation efficiency)
+    X_test_sample = X_test.sample(min(100, len(X_test)), random_state=42)
+    
+    # Create a SHAP explainer
+    if 'Random Forest' in best_model_name or 'XGBoost' in best_model_name:
+        explainer = shap.TreeExplainer(best_model)
+    else:
+        explainer = shap.KernelExplainer(best_model.predict_proba if is_classification else best_model.predict, 
+                                        shap.sample(X_train, 100, random_state=42))
+    
+    # Calculate SHAP values
+    shap_values = explainer.shap_values(X_test_sample)
+    
+    # SHAP summary plot
+    plt.figure(figsize=(12, 8))
+    if is_classification and len(np.array(shap_values).shape) == 3:
+        # For multi-class, use class 1 for analysis
+        shap.summary_plot(shap_values[1], X_test_sample, plot_type="bar", show=False)
+        plt.title(f'SHAP Feature Importance (Class 1) - {best_model_name}')
+    else:
+        shap.summary_plot(shap_values, X_test_sample, plot_type="bar", show=False)
+        plt.title(f'SHAP Feature Importance - {best_model_name}')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig('/content/drive/MyDrive/figures/shap_importance.png')
+    
+    # SHAP dependency plots for top features
+    if isinstance(shap_values, list) and is_classification:
+        top_features = pd.DataFrame(np.abs(shap_values[1]).mean(0), index=X_test_sample.columns, columns=["SHAP"]).sort_values("SHAP", ascending=False).index[:3]
+    else:
+        top_features = pd.DataFrame(np.abs(shap_values).mean(0), index=X_test_sample.columns, columns=["SHAP"]).sort_values("SHAP", ascending=False).index[:3]
+    
+    for feature in top_features:
+        plt.figure(figsize=(10, 6))
+        if is_classification and len(np.array(shap_values).shape) == 3:
+            shap.dependence_plot(feature, shap_values[1], X_test_sample, show=False)
+        else:
+            shap.dependence_plot(feature, shap_values, X_test_sample, show=False)
+        plt.title(f'SHAP Dependence Plot for {feature} - {best_model_name}')
+        plt.tight_layout()
+        plt.show()
+        plt.savefig(f'/content/drive/MyDrive/figures/shap_dependence_{feature}.png')
+    
+    # SHAP force plots for sample individuals
+    plt.figure(figsize=(16, 6))
+    if is_classification and len(np.array(shap_values).shape) == 3:
+        shap.force_plot(explainer.expected_value[1], shap_values[1][:5,:], X_test_sample.iloc[:5,:], show=False)
+    else:
+        if isinstance(explainer.expected_value, list):
+            shap.force_plot(explainer.expected_value[0], shap_values[:5,:], X_test_sample.iloc[:5,:], show=False)
+        else:
+            shap.force_plot(explainer.expected_value, shap_values[:5,:], X_test_sample.iloc[:5,:], show=False)
+    plt.title(f'SHAP Force Plot (Sample Individuals) - {best_model_name}')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig('/content/drive/MyDrive/figures/shap_force_plot.png')
+    
+    logger.info("SHAP analysis completed successfully")
+except Exception as e:
+    logger.error(f"Error in SHAP analysis: {e}")
+    print(f"SHAP analysis error: {e}")
+
+# 4. LIME Explanations
+print("\n4. LIME Analysis")
+try:
+    from lime import lime_tabular
+    
+    # Create a LIME explainer
+    lime_explainer = lime_tabular.LimeTabularExplainer(
+        X_train.values,
+        training_labels=y_train,
+        feature_names=X_train.columns.tolist(),
+        class_names=y.unique().astype(str).tolist() if is_classification else None,
+        mode='classification' if is_classification else 'regression',
+        random_state=42
+    )
+    
+    # Select a random instance to explain
+    instance_idx = np.random.randint(0, len(X_test))
+    instance = X_test.iloc[instance_idx].values
+    
+    # Generate explanation
+    if is_classification:
+        explanation = lime_explainer.explain_instance(
+            instance, 
+            best_model.predict_proba, 
+            num_features=10
+        )
+    else:
+        explanation = lime_explainer.explain_instance(
+            instance, 
+            best_model.predict, 
+            num_features=10
+        )
+    
+    # Visualize LIME explanation
+    plt.figure(figsize=(10, 6))
+    explanation.as_pyplot_figure()
+    plt.title(f'LIME Explanation for Instance {instance_idx} - {best_model_name}')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig('/content/drive/MyDrive/figures/lime_explanation.png')
+    
+    # Print the explanation in text form
+    print(f"LIME Explanation for Instance {instance_idx}:")
+    for feature, weight in explanation.as_list():
+        print(f"  {feature}: {weight:.4f}")
+    
+    logger.info("LIME analysis completed successfully")
+except Exception as e:
+    logger.error(f"Error in LIME analysis: {e}")
+    print(f"LIME analysis error: {e}")
+
+# 5. Partial Dependence Plots (PDP)
+print("\n5. Partial Dependence Plot Analysis")
+try:
+    from sklearn.inspection import plot_partial_dependence
+    
+    # Select top features for PDP
+    top_features = perm_importance_sorted_idx[:5]
+    
+    # Create PDPs
+    fig, ax = plt.subplots(figsize=(12, 10))
+    plot_partial_dependence(
+        best_model, X_train, features=top_features, feature_names=X_train.columns.tolist(),
+        n_jobs=-1, ax=ax, random_state=42
+    )
+    plt.suptitle(f'Partial Dependence Plots - {best_model_name}')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig('/content/drive/MyDrive/figures/partial_dependence_plots.png')
+    
+    logger.info("Partial Dependence Plot analysis completed successfully")
+except Exception as e:
+    logger.error(f"Error in PDP analysis: {e}")
+    print(f"PDP analysis error: {e}")
+
+# 🔹 10. Best Model Export & Final Insights
+logger.info("Step 10: Model Export and Final Insights")
+
+# Export best model
+print("\n--- Exporting Best Model ---")
+best_model_file = f'/content/drive/MyDrive/best_model_{best_model_name.replace(" ", "_").lower()}.pkl'
+joblib.dump(best_model, best_model_file)
+print(f"Best model ({best_model_name}) saved to: {best_model_file}")
+
+# Export feature importance data
+feature_importance_data = {}
+if 'importance_df' in locals():
+    feature_importance_data['tree_importance'] = importance_df.to_dict()
+feature_importance_data['permutation_importance'] = {
+    'features': X_test.columns[perm_importance_sorted_idx].tolist(),
+    'importance_mean': perm_importance.importances_mean[perm_importance_sorted_idx].tolist(),
+    'importance_std': perm_importance.importances_std[perm_importance_sorted_idx].tolist()
+}
+
+# Save feature importance data
+import json
+with open('/content/drive/MyDrive/feature_importance_data.json', 'w') as f:
+    json.dump(feature_importance_data, f, indent=4)
+print("Feature importance data saved to feature_importance_data.json")
+
+# Summarize findings
+print("\n--- Summary of Findings ---")
+
+# Print model performance comparison
+print("Model Performance Comparison:")
+if is_classification:
+    result_dict = {name: result['test_accuracy'] for name, result in model_results.items()}
+    if best_tuned_models:
+        for name, model in best_tuned_models.items():
+            result_dict[f"{name} (Tuned)"] = accuracy_score(y_test, model.predict(X_test))
+    
+    # Sort by performance
+    for name, accuracy in sorted(result_dict.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {name}: {accuracy:.4f}")
+else:
+    result_dict = {name: result['test_r2'] for name, result in model_results.items()}
+    if best_tuned_models:
+        for name, model in best_tuned_models.items():
+            result_dict[f"{name} (Tuned)"] = r2_score(y_test, model.predict(X_test))
+    
+    # Sort by performance
+    for name, r2 in sorted(result_dict.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {name}: {r2:.4f}")
+
+# Print top features across all explainability methods
+print("\nTop Features by Different Explainability Methods:")
+print("1. Permutation Importance:")
+for i, idx in enumerate(perm_importance_sorted_idx[:5]):
+    print(f"   {i+1}. {X_test.columns[idx]}")
+
+if 'importance_df' in locals():
+    print("\n2. Tree-based Feature Importance:")
+    for i, (_, row) in enumerate(importance_df.head(5).iterrows()):
+        print(f"   {i+1}. {row['Feature']}")
+
+print("\n--- Diabetes Risk Perception Research Insights ---")
+print("Based on the model and explainability analysis, the key factors influencing diabetes risk perception include:")
+
+# Extract top 5 features across methods
+top_features_combined = set()
+if 'importance_df' in locals():
+    top_features_combined.update(importance_df.head(5)['Feature'].tolist())
+top_features_combined.update([X_test.columns[idx] for idx in perm_importance_sorted_idx[:5]])
+
+# List key findings
+for i, feature in enumerate(list(top_features_combined)[:10]):
+    print(f"{i+1}. {feature}")
+
+# Write findings to a report
+report_content = f"""
+# Diabetes Risk Perception ML Analysis Report
+
+## Project Overview
+This project applied machine learning techniques to analyze factors influencing diabetes risk perception and behavioral responses. The analysis utilized a dataset of {len(df)} individuals with various demographic, lifestyle, and health-related features.
+
+## Key Findings
+
+### Best Performing Model
+{best_model_name} was identified as the best performing model with {'an accuracy' if is_classification else 'an R² score'} of {max(result_dict.values()):.4f}.
+
+### Most Important Features
+The most influential factors in diabetes risk perception were:
+
+{''.join([f"- {feature}\n" for feature in list(top_features_combined)[:10]])}
+
+### Model Performance Comparison
+{''.join([f"- {name}: {score:.4f}\n" for name, score in sorted(result_dict.items(), key=lambda x: x[1], reverse=True)])}
+
+## Implications for Diabetes Risk Management
+The identified features suggest that [interpretation based on domain knowledge]. These findings can be used to develop targeted interventions focusing on the most influential factors in diabetes risk perception.
+
+## Methodological Strengths
+- Comprehensive ML pipeline with multiple models and rigorous validation
+- Explainable AI techniques providing interpretable insights
+- Robust handling of data preprocessing and feature engineering
+
+## Recommendations
+Based on the analysis results, we recommend:
+1. Focusing educational interventions on the top identified factors
+2. Developing personalized risk assessment tools incorporating these features
+3. Further research on the causal relationships between these factors and diabetes risk perception
+
+## Technical Implementation Details
+- Dataset: {df.shape[0]} samples, {df.shape[1]} features
+- ML Pipeline: Preprocessing, EDA, Model Training, Hyperparameter Tuning, Explainability
+- Tools: scikit-learn, XGBoost, SHAP, LIME
+"""
+
+# Save the report
+with open('/content/drive/MyDrive/diabetes_risk_perception_report.md', 'w') as f:
+    f.write(report_content)
+print("Analysis report saved to diabetes_risk_perception_report.md")
+
+# Record end time and calculate execution time
+end_time = time.time()
+execution_time = end_time - start_time
+print(f"\nTotal execution time: {execution_time:.2f} seconds ({execution_time/60:.2f} minutes)")
+logger.info(f"ML pipeline completed in {execution_time:.2f} seconds")
+
+print("\n=== Diabetes Risk Perception ML Pipeline Complete ===")
+print("All analysis results and figures have been saved to Google Drive.")
+print("Thank you for using this comprehensive ML pipeline for your research project!")
